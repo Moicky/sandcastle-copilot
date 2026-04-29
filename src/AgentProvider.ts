@@ -118,6 +118,8 @@ export interface AgentProvider {
   readonly env: Record<string, string>;
   /** When true, session capture is enabled for this provider. Default: true for Claude Code, false for others. */
   readonly captureSessions: boolean;
+  /** When true, copy the provider's sandbox session-state directory to the host after a run. */
+  readonly captureSessionState?: boolean;
   buildPrintCommand(options: AgentCommandOptions): PrintCommand;
   buildInteractiveArgs?(options: AgentCommandOptions): string[];
   parseStreamLine(line: string): ParsedStreamEvent[];
@@ -430,6 +432,7 @@ export const copilotCli = (
   name: "copilot-cli",
   env: options?.env ?? {},
   captureSessions: false,
+  captureSessionState: true,
 
   buildPrintCommand({
     prompt,

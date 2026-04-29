@@ -799,9 +799,10 @@ describe("copilotCli factory", () => {
     expect(provider).not.toHaveProperty("dockerfileTemplate");
   });
 
-  it("does not capture sessions", () => {
+  it("captures Copilot CLI session-state", () => {
     const provider = copilotCli("gpt-5.5");
     expect(provider.captureSessions).toBe(false);
+    expect(provider.captureSessionState).toBe(true);
   });
 
   it("buildPrintCommand uses Copilot CLI non-interactive JSON mode", () => {
