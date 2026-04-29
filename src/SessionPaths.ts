@@ -1,5 +1,17 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { Context, Layer } from "effect";
+
+const HOST_COPILOT_SESSION_STATE_DIR = join(
+  homedir(),
+  ".copilot",
+  "session-state",
+);
+const SANDBOX_COPILOT_SESSION_STATE_DIR = join(
+  "/home/agent",
+  ".copilot",
+  "session-state",
+);
 
 /**
  * Host- and sandbox-side Claude `projects` directories used by the
@@ -27,16 +39,8 @@ export const sessionPathsLayer = (config: {
   readonly sandboxCopilotSessionStateDir?: string;
 }): Layer.Layer<SessionPaths> =>
   Layer.succeed(SessionPaths, {
-    hostCopilotSessionStateDir: join(
-      process.env.HOME ?? "~",
-      ".copilot",
-      "session-state",
-    ),
-    sandboxCopilotSessionStateDir: join(
-      "/home/agent",
-      ".copilot",
-      "session-state",
-    ),
+    hostCopilotSessionStateDir: HOST_COPILOT_SESSION_STATE_DIR,
+    sandboxCopilotSessionStateDir: SANDBOX_COPILOT_SESSION_STATE_DIR,
     ...config,
   });
 
@@ -48,17 +52,9 @@ export const sessionPathsLayer = (config: {
 export const defaultSessionPathsLayer: Layer.Layer<SessionPaths> = Layer.sync(
   SessionPaths,
   () => ({
-    hostProjectsDir: join(process.env.HOME ?? "~", ".claude", "projects"),
+    hostProjectsDir: join(homedir(), ".claude", "projects"),
     sandboxProjectsDir: join("/home/agent", ".claude", "projects"),
-    hostCopilotSessionStateDir: join(
-      process.env.HOME ?? "~",
-      ".copilot",
-      "session-state",
-    ),
-    sandboxCopilotSessionStateDir: join(
-      "/home/agent",
-      ".copilot",
-      "session-state",
-    ),
+    hostCopilotSessionStateDir: HOST_COPILOT_SESSION_STATE_DIR,
+    sandboxCopilotSessionStateDir: SANDBOX_COPILOT_SESSION_STATE_DIR,
   }),
 );
