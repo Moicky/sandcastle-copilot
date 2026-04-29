@@ -33,13 +33,13 @@ Sandcastle is provider-agnostic — it ships with built-in providers for Docker,
 npm install --save-dev @ai-hero/sandcastle
 ```
 
-2. Run `sandcastle init`. This scaffolds a `.sandcastle` directory with all the files needed.
+2. Run `sandcastle init`. This scaffolds a `.sandcastle` directory with all the files needed. Init detects pnpm projects from `package.json#packageManager`, `pnpm-workspace.yaml`, or `pnpm-lock.yaml`; override with `--package-manager npm|pnpm` if needed.
 
 ```bash
 npx sandcastle init
 ```
 
-3. Edit `.sandcastle/.env` and fill in your default values for `ANTHROPIC_API_KEY`. If you want to use your Claude subscription instead of an API key, see [#191](https://github.com/mattpocock/sandcastle/issues/191).
+3. Edit `.sandcastle/.env` and fill in the required values from `.sandcastle/.env.example`. The default Copilot CLI agent provider uses `GITHUB_TOKEN`; if you select Claude Code instead, fill in `ANTHROPIC_API_KEY`.
 
 ```bash
 cp .sandcastle/.env.example .sandcastle/.env
@@ -53,11 +53,11 @@ npx tsx .sandcastle/main.ts
 
 ```typescript
 // 3. Run the agent via the JS API
-import { run, claudeCode } from "@ai-hero/sandcastle";
+import { run, copilotCli } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
 await run({
-  agent: claudeCode("claude-opus-4-6"),
+  agent: copilotCli("gpt-5.5"),
   sandbox: docker(), // or podman(), vercel(), or your own provider
   promptFile: ".sandcastle/prompt.md",
 });
@@ -123,13 +123,13 @@ console.log(result.branch); // target branch name
 ### All options
 
 ```typescript
-import { run, claudeCode } from "@ai-hero/sandcastle";
+import { run, copilotCli } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
 const result = await run({
-  // Agent provider — required. Pass a model string to claudeCode().
+  // Agent provider — required. Pass a model string to copilotCli().
   // Optional second arg for provider-specific options like effort level.
-  agent: claudeCode("claude-opus-4-6", { effort: "high" }),
+  agent: copilotCli("gpt-5.5", { effort: "high" }),
 
   // Sandbox provider — required. Any SandboxProvider works (docker, podman, vercel, or custom).
   // Provider-specific config (like imageName, mounts) lives inside the provider factory call.
@@ -317,18 +317,18 @@ if (closeResult.preservedWorktreePath) {
 
 #### `SandboxRunOptions`
 
-| Option               | Type               | Default                       | Description                                                         |
-| -------------------- | ------------------ | ----------------------------- | ------------------------------------------------------------------- |
-| `agent`              | AgentProvider      | —                             | **Required.** Agent provider (e.g. `claudeCode("claude-opus-4-6")`) |
-| `prompt`             | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)                |
-| `promptFile`         | string             | —                             | Path to prompt file (mutually exclusive with `prompt`)              |
-| `promptArgs`         | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                |
-| `maxIterations`      | number             | `1`                           | Maximum iterations to run                                           |
-| `completionSignal`   | string \| string[] | `<promise>COMPLETE</promise>` | String(s) the agent emits to stop the iteration loop early          |
-| `idleTimeoutSeconds` | number             | `600`                         | Idle timeout in seconds — resets on each agent output event         |
-| `name`               | string             | —                             | Display name for the run                                            |
-| `logging`            | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                    |
-| `signal`             | AbortSignal        | —                             | Cancels the run when aborted; handle stays usable afterward         |
+| Option               | Type               | Default                       | Description                                                 |
+| -------------------- | ------------------ | ----------------------------- | ----------------------------------------------------------- |
+| `agent`              | AgentProvider      | —                             | **Required.** Agent provider (e.g. `copilotCli("gpt-5.5")`) |
+| `prompt`             | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)        |
+| `promptFile`         | string             | —                             | Path to prompt file (mutually exclusive with `prompt`)      |
+| `promptArgs`         | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution        |
+| `maxIterations`      | number             | `1`                           | Maximum iterations to run                                   |
+| `completionSignal`   | string \| string[] | `<promise>COMPLETE</promise>` | String(s) the agent emits to stop the iteration loop early  |
+| `idleTimeoutSeconds` | number             | `600`                         | Idle timeout in seconds — resets on each agent output event |
+| `name`               | string             | —                             | Display name for the run                                    |
+| `logging`            | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`            |
+| `signal`             | AbortSignal        | —                             | Cancels the run when aborted; handle stays usable afterward |
 
 #### `SandboxRunResult`
 
@@ -592,7 +592,7 @@ Tell the agent to output your chosen string(s) in the prompt, and the orchestrat
 
 ### Templates
 
-`sandcastle init` prompts you to choose a sandbox provider (Docker or Podman), a backlog manager (GitHub Issues or Beads), and a template, which scaffolds a ready-to-use prompt and `main.mts` suited to a specific workflow. If your project's `package.json` has `"type": "module"`, the file will be named `main.ts` instead. Five templates are available:
+`sandcastle init` prompts you to choose a sandbox provider (Docker or Podman), a package manager (npm or pnpm), a backlog manager (GitHub Issues or Beads), and a template, which scaffolds a ready-to-use prompt and `main.mts` suited to a specific workflow. If your project's `package.json` has `"type": "module"`, the file will be named `main.ts` instead. Five templates are available:
 
 | Template                       | Description                                                               |
 | ------------------------------ | ------------------------------------------------------------------------- |
@@ -608,14 +608,15 @@ Select a template during `sandcastle init` when prompted, or re-run init in a fr
 
 ### `sandcastle init`
 
-Scaffolds the `.sandcastle/` config directory and builds the container image. This is the first command you run in a new repo. You choose a sandbox provider (Docker or Podman) during init — selecting Podman writes a `Containerfile` instead of `Dockerfile` and uses `sandcastle podman build-image` for the build step.
+Scaffolds the `.sandcastle/` config directory and builds the container image. This is the first command you run in a new repo. You choose a sandbox provider (Docker or Podman) during init — selecting Podman writes a `Containerfile` instead of `Dockerfile` and uses `sandcastle podman build-image` for the build step. Init also detects npm vs pnpm and writes matching install hooks and package-manager tooling into the generated containerfile.
 
-| Option         | Required | Default                      | Description                                                          |
-| -------------- | -------- | ---------------------------- | -------------------------------------------------------------------- |
-| `--image-name` | No       | `sandcastle:<repo-dir-name>` | Docker image name                                                    |
-| `--agent`      | No       | Interactive prompt           | Agent to use (`claude-code`, `pi`, `codex`, `opencode`)              |
-| `--model`      | No       | Agent's default model        | Model to use (e.g. `claude-sonnet-4-6`). Defaults to agent's default |
-| `--template`   | No       | Interactive prompt           | Template to scaffold (e.g. `blank`, `simple-loop`)                   |
+| Option              | Required | Default                      | Description                                                            |
+| ------------------- | -------- | ---------------------------- | ---------------------------------------------------------------------- |
+| `--image-name`      | No       | `sandcastle:<repo-dir-name>` | Docker image name                                                      |
+| `--agent`           | No       | Interactive prompt           | Agent to use (`copilot-cli`, `claude-code`, `pi`, `codex`, `opencode`) |
+| `--model`           | No       | Agent's default model        | Model to use (e.g. `gpt-5.5`). Defaults to agent's default             |
+| `--package-manager` | No       | Repo detection               | Package manager for generated Dockerfile/Containerfile and hooks       |
+| `--template`        | No       | Interactive prompt           | Template to scaffold (e.g. `blank`, `simple-loop`)                     |
 
 Creates the following files:
 
@@ -665,25 +666,25 @@ Removes the Podman image.
 
 ### `RunOptions`
 
-| Option               | Type               | Default                       | Description                                                                                                                                                     |
-| -------------------- | ------------------ | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent`              | AgentProvider      | —                             | **Required.** Agent provider (e.g. `claudeCode("claude-opus-4-6")`, `pi("claude-sonnet-4-6")`, `codex("gpt-5.4-mini")`, `opencode("opencode/big-pickle")`)      |
-| `sandbox`            | SandboxProvider    | —                             | **Required.** Sandbox provider (e.g. `docker()`, `podman()`, `docker({ imageName: "sandcastle:local" })`)                                                       |
-| `cwd`                | string             | `process.cwd()`               | Host repo directory — anchor for `.sandcastle/` artifacts and git operations. Relative paths resolve against `process.cwd()`.                                   |
-| `prompt`             | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)                                                                                                            |
-| `promptFile`         | string             | —                             | Path to prompt file (mutually exclusive with `prompt`). Resolves against `process.cwd()`, **not** `cwd`.                                                        |
-| `maxIterations`      | number             | `1`                           | Maximum iterations to run                                                                                                                                       |
-| `hooks`              | SandboxHooks       | —                             | Lifecycle hooks (`host.*`, `sandbox.*`)                                                                                                                         |
-| `name`               | string             | —                             | Display name for the run, shown as a prefix in log output                                                                                                       |
-| `promptArgs`         | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                                                                                                            |
-| `branchStrategy`     | BranchStrategy     | per-provider default          | Branch strategy: `{ type: 'head' }`, `{ type: 'merge-to-head' }`, or `{ type: 'branch', branch: '…' }`                                                          |
-| `copyToWorktree`     | string[]           | —                             | Host-relative file paths to copy into the sandbox before start (not supported with `branchStrategy: { type: 'head' }`)                                          |
-| `logging`            | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                                                |
-| `completionSignal`   | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                     |
-| `idleTimeoutSeconds` | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                     |
-| `resumeSession`      | string             | —                             | Resume a prior Claude Code session by ID. Incompatible with `maxIterations > 1`. Session file must exist on host.                                               |
-| `signal`             | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`. |
-| `timeouts`           | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps. Currently supports `{ copyToWorktreeMs?: number }` (default: 60 000).                                   |
+| Option               | Type               | Default                       | Description                                                                                                                                                                         |
+| -------------------- | ------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent`              | AgentProvider      | —                             | **Required.** Agent provider (e.g. `copilotCli("gpt-5.5")`, `claudeCode("claude-opus-4-6")`, `pi("claude-sonnet-4-6")`, `codex("gpt-5.4-mini")`, `opencode("opencode/big-pickle")`) |
+| `sandbox`            | SandboxProvider    | —                             | **Required.** Sandbox provider (e.g. `docker()`, `podman()`, `docker({ imageName: "sandcastle:local" })`)                                                                           |
+| `cwd`                | string             | `process.cwd()`               | Host repo directory — anchor for `.sandcastle/` artifacts and git operations. Relative paths resolve against `process.cwd()`.                                                       |
+| `prompt`             | string             | —                             | Inline prompt (mutually exclusive with `promptFile`)                                                                                                                                |
+| `promptFile`         | string             | —                             | Path to prompt file (mutually exclusive with `prompt`). Resolves against `process.cwd()`, **not** `cwd`.                                                                            |
+| `maxIterations`      | number             | `1`                           | Maximum iterations to run                                                                                                                                                           |
+| `hooks`              | SandboxHooks       | —                             | Lifecycle hooks (`host.*`, `sandbox.*`)                                                                                                                                             |
+| `name`               | string             | —                             | Display name for the run, shown as a prefix in log output                                                                                                                           |
+| `promptArgs`         | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                                                                                                                                |
+| `branchStrategy`     | BranchStrategy     | per-provider default          | Branch strategy: `{ type: 'head' }`, `{ type: 'merge-to-head' }`, or `{ type: 'branch', branch: '…' }`                                                                              |
+| `copyToWorktree`     | string[]           | —                             | Host-relative file paths to copy into the sandbox before start (not supported with `branchStrategy: { type: 'head' }`)                                                              |
+| `logging`            | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                                                                    |
+| `completionSignal`   | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                                         |
+| `idleTimeoutSeconds` | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                                         |
+| `resumeSession`      | string             | —                             | Resume a prior Claude Code session by ID. Incompatible with `maxIterations > 1`. Session file must exist on host.                                                                   |
+| `signal`             | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`.                     |
+| `timeouts`           | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps. Currently supports `{ copyToWorktreeMs?: number }` (default: 60 000).                                                       |
 
 ### `RunResult`
 
@@ -767,6 +768,19 @@ agent: codex("gpt-5.4", { effort: "high" });
 | -------- | ---------------------------------------------- | ------- | --------------------------------------------------------- |
 | `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Codex reasoning effort level via `model_reasoning_effort` |
 | `env`    | `Record<string, string>`                       | `{}`    | Environment variables injected by this agent provider     |
+
+### `CopilotCliOptions`
+
+The `copilotCli()` factory accepts an optional second argument for provider-specific options:
+
+```typescript
+agent: copilotCli("gpt-5.5", { effort: "high" });
+```
+
+| Option   | Type                                           | Default | Description                                           |
+| -------- | ---------------------------------------------- | ------- | ----------------------------------------------------- |
+| `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Copilot CLI reasoning effort level via `--effort`     |
+| `env`    | `Record<string, string>`                       | `{}`    | Environment variables injected by this agent provider |
 
 ### Provider `env`
 

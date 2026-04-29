@@ -14,6 +14,9 @@ import {
   getBacklogManager,
   listSandboxProviders,
   getSandboxProvider,
+  listPackageManagers,
+  getPackageManager,
+  detectPackageManager,
 } from "./InitService.js";
 import type { AgentEntry, ScaffoldOptions } from "./InitService.js";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
@@ -25,6 +28,9 @@ const claudeCodeAgent = getAgent("claude-code")!;
 const piAgent = getAgent("pi")!;
 const codexAgent = getAgent("codex")!;
 const opencodeAgent = getAgent("opencode")!;
+const copilotCliAgent = getAgent("copilot-cli")!;
+const npmPackageManager = getPackageManager("npm")!;
+const pnpmPackageManager = getPackageManager("pnpm")!;
 
 const defaultOptions: ScaffoldOptions = {
   agent: claudeCodeAgent,
@@ -46,6 +52,11 @@ describe("Agent registry", () => {
   it("listAgents returns at least claude-code", () => {
     const agents = listAgents();
     expect(agents.some((a) => a.name === "claude-code")).toBe(true);
+  });
+
+  it("listAgents returns copilot-cli as the first/default agent", () => {
+    const agents = listAgents();
+    expect(agents[0]?.name).toBe("copilot-cli");
   });
 
   it("getAgent returns claude-code entry with expected fields", () => {
@@ -107,6 +118,75 @@ describe("Agent registry", () => {
     expect(agent!.dockerfileTemplate).toContain("FROM");
     expect(agent!.dockerfileTemplate).toContain("opencode-ai");
   });
+
+  it("listAgents includes copilot-cli", () => {
+    const agents = listAgents();
+    expect(agents.some((a) => a.name === "copilot-cli")).toBe(true);
+  });
+
+  it("getAgent returns copilot-cli entry with expected fields", () => {
+    const agent = getAgent("copilot-cli");
+    expect(agent).toBeDefined();
+    expect(agent!.name).toBe("copilot-cli");
+    expect(agent!.defaultModel).toBe("gpt-5.5");
+    expect(agent!.factoryImport).toBe("copilotCli");
+    expect(agent!.dockerfileTemplate).toContain("FROM");
+    expect(agent!.dockerfileTemplate).toContain("@github/copilot");
+  });
+
+  it("agent Dockerfiles make /home/agent writable for Docker host UID mapping", () => {
+    const agents = listAgents();
+    for (const agent of agents) {
+      expect(agent.dockerfileTemplate).toContain("chmod 0777 /home/agent");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Package manager registry
+// ---------------------------------------------------------------------------
+
+describe("Package manager registry", () => {
+  it("listPackageManagers returns npm and pnpm", () => {
+    const packageManagers = listPackageManagers();
+    expect(packageManagers.map((pm) => pm.name)).toEqual(["npm", "pnpm"]);
+  });
+
+  it("detectPackageManager defaults to npm", async () => {
+    const dir = await makeDir();
+
+    const detected = await Effect.runPromise(
+      detectPackageManager(dir).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+
+    expect(detected.name).toBe("npm");
+  });
+
+  it("detectPackageManager detects package.json packageManager pnpm", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ packageManager: "pnpm@9.0.0" }),
+    );
+
+    const detected = await Effect.runPromise(
+      detectPackageManager(dir).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+
+    expect(detected.name).toBe("pnpm");
+    expect(detected.version).toBe("9.0.0");
+  });
+
+  it("detectPackageManager detects pnpm workspace files", async () => {
+    const dir = await makeDir();
+    await writeFile(join(dir, "pnpm-workspace.yaml"), "packages: []\n");
+
+    const detected = await Effect.runPromise(
+      detectPackageManager(dir).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+
+    expect(detected.name).toBe("pnpm");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -155,6 +235,12 @@ describe("InitService scaffold", () => {
       unexpectedKey: "ANTHROPIC_API_KEY=",
       expectIssue191Link: false,
     },
+    {
+      agent: copilotCliAgent,
+      expectedKey: "GITHUB_TOKEN=",
+      unexpectedKey: "ANTHROPIC_API_KEY=",
+      expectIssue191Link: false,
+    },
   ])(
     "generates .env.example with $agent.name env var",
     async ({ agent, expectedKey, unexpectedKey, expectIssue191Link }) => {
@@ -186,6 +272,28 @@ describe("InitService scaffold", () => {
       "utf-8",
     );
     expect(envExample).toContain("GH_TOKEN=");
+  });
+
+  it("scaffolds Copilot CLI Dockerfile, env, and main file", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: copilotCliAgent,
+      model: copilotCliAgent.defaultModel,
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const dockerfile = await readFile(join(configDir, "Dockerfile"), "utf-8");
+    expect(dockerfile).toContain("npm install -g @github/copilot");
+
+    const envExample = await readFile(join(configDir, ".env.example"), "utf-8");
+    expect(envExample).toContain("GITHUB_TOKEN=");
+    expect(envExample).toContain("GH_TOKEN=");
+    expect(envExample).not.toContain("ANTHROPIC_API_KEY=");
+
+    const mainTs = await readFile(join(configDir, "main.mts"), "utf-8");
+    expect(mainTs).toContain("copilotCli");
+    expect(mainTs).toContain('copilotCli("gpt-5.5")');
+    expect(mainTs).not.toContain("claudeCode");
   });
 
   it("generates .env.example without GH_TOKEN when backlog manager is beads", async () => {
@@ -248,7 +356,7 @@ describe("InitService scaffold", () => {
 
   it("claude-code Dockerfile template does not install pnpm or enable corepack", async () => {
     const dir = await makeDir();
-    await runScaffold(dir);
+    await runScaffold(dir, { packageManager: npmPackageManager });
 
     const dockerfile = await readFile(
       join(dir, ".sandcastle", "Dockerfile"),
@@ -256,6 +364,39 @@ describe("InitService scaffold", () => {
     );
     expect(dockerfile).not.toContain("corepack");
     expect(dockerfile).not.toContain("pnpm");
+  });
+
+  it("scaffolds pnpm Dockerfile tools and install hooks when packageManager is pnpm", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      templateName: "parallel-planner-with-review",
+      packageManager: pnpmPackageManager,
+    });
+
+    const configDir = join(dir, ".sandcastle");
+    const dockerfile = await readFile(join(configDir, "Dockerfile"), "utf-8");
+    expect(dockerfile).toContain("npm install -g pnpm@latest");
+
+    const mainTs = await readFile(join(configDir, "main.mts"), "utf-8");
+    expect(mainTs).toContain('command: "pnpm install"');
+    expect(mainTs).toContain("pnpm install ensures");
+    expect(mainTs).not.toContain('command: "npm install"');
+  });
+
+  it("auto-detects pnpm for scaffolded Dockerfile and install hooks", async () => {
+    const dir = await makeDir();
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ packageManager: "pnpm@9.0.0" }),
+    );
+    await runScaffold(dir, { templateName: "simple-loop" });
+
+    const configDir = join(dir, ".sandcastle");
+    const dockerfile = await readFile(join(configDir, "Dockerfile"), "utf-8");
+    expect(dockerfile).toContain("npm install -g pnpm@9.0.0");
+
+    const mainTs = await readFile(join(configDir, "main.mts"), "utf-8");
+    expect(mainTs).toContain('command: "pnpm install"');
   });
 
   it("skeleton prompt contains section headers and hints", async () => {
@@ -864,6 +1005,20 @@ describe("InitService scaffold", () => {
       expect(mainTs).not.toContain("completedBranches.length === 1");
     });
 
+    it("main.mts extracts the final plan block when instructions are echoed", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain("matchAll");
+      expect(mainTs).toContain("(?:^|\\n)\\s*<plan>");
+      expect(mainTs).toContain("planMatches.at(-1)");
+      expect(mainTs).not.toContain("plan.stdout.match(/<plan>");
+    });
+
     it("common files are still generated with parallel-planner template", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner" });
@@ -1006,6 +1161,20 @@ describe("InitService scaffold", () => {
         mainTs.indexOf('name: "merger"') + 200,
       );
       expect(mergerSection).toContain("maxIterations: 1");
+    });
+
+    it("main.mts extracts the final plan block when instructions are echoed", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain("matchAll");
+      expect(mainTs).toContain("(?:^|\\n)\\s*<plan>");
+      expect(mainTs).toContain("planMatches.at(-1)");
+      expect(mainTs).not.toContain("plan.stdout.match(/<plan>");
     });
 
     it("implement-prompt.md contains {{TASK_ID}}, {{ISSUE_TITLE}}, {{BRANCH}} prompt arguments", async () => {

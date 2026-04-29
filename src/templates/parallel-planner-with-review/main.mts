@@ -33,13 +33,13 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 const MAX_ITERATIONS = 10;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
-// npm install ensures the sandbox always has fresh dependencies.
+// {{INSTALL_COMMAND}} ensures the sandbox always has fresh dependencies.
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: "npm install" }] },
+  sandbox: { onSandboxReady: [{ command: "{{INSTALL_COMMAND}}" }] },
 };
 
 // Copy node_modules from the host into the worktree before each sandbox
-// starts. Avoids a full npm install from scratch; the hook above handles
+// starts. Avoids a full {{PACKAGE_MANAGER}} install from scratch; the hook above handles
 // platform-specific binaries and any packages added since the last copy.
 const copyToWorktree = ["node_modules"];
 
@@ -71,8 +71,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     promptFile: "./.sandcastle/plan-prompt.md",
   });
 
-  // Extract the <plan>…</plan> block from the agent's stdout.
-  const planMatch = plan.stdout.match(/<plan>([\s\S]*?)<\/plan>/);
+  // Extract the final <plan>…</plan> block from the agent's stdout. Some agents
+  // echo prompt instructions/examples before their final answer.
+  const planMatches = [
+    ...plan.stdout.matchAll(/(?:^|\n)\s*<plan>\s*([\s\S]*?)\s*<\/plan>/g),
+  ];
+  const planMatch = planMatches.at(-1);
   if (!planMatch) {
     throw new Error(
       "Planning agent did not produce a <plan> tag.\n\n" + plan.stdout,
@@ -212,9 +216,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       // A markdown list of branch names, one per line.
       BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
       // A markdown list of issue IDs and titles, one per line.
-      ISSUES: completedIssues
-        .map((i) => `- ${i.id}: ${i.title}`)
-        .join("\n"),
+      ISSUES: completedIssues.map((i) => `- ${i.id}: ${i.title}`).join("\n"),
     },
   });
 

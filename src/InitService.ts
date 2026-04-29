@@ -67,10 +67,12 @@ RUN apt-get update && apt-get install -y \\
 
 {{BACKLOG_MANAGER_TOOLS}}
 
+{{PACKAGE_MANAGER_TOOLS}}
+
 # Rename the base image's "node" user (UID 1000) to "agent".
-# This keeps UID 1000 so that --userns=keep-id (Podman) and
-# --user 1000:1000 (Docker) map to the correct home directory owner.
-RUN usermod -d /home/agent -m -l agent node
+# Docker runs sandbox containers as the host UID/GID, so keep the home directory
+# writable even when that UID differs from the image's agent user.
+RUN usermod -d /home/agent -m -l agent node && chmod 0777 /home/agent
 USER agent
 
 # Install Claude Code CLI
@@ -98,10 +100,12 @@ RUN apt-get update && apt-get install -y \\
 
 {{BACKLOG_MANAGER_TOOLS}}
 
+{{PACKAGE_MANAGER_TOOLS}}
+
 # Rename the base image's "node" user (UID 1000) to "agent".
-# This keeps UID 1000 so that --userns=keep-id (Podman) and
-# --user 1000:1000 (Docker) map to the correct home directory owner.
-RUN usermod -d /home/agent -m -l agent node
+# Docker runs sandbox containers as the host UID/GID, so keep the home directory
+# writable even when that UID differs from the image's agent user.
+RUN usermod -d /home/agent -m -l agent node && chmod 0777 /home/agent
 
 # Install pi coding agent (run as root before USER agent)
 RUN npm install -g @mariozechner/pi-coding-agent
@@ -127,10 +131,12 @@ RUN apt-get update && apt-get install -y \\
 
 {{BACKLOG_MANAGER_TOOLS}}
 
+{{PACKAGE_MANAGER_TOOLS}}
+
 # Rename the base image's "node" user (UID 1000) to "agent".
-# This keeps UID 1000 so that --userns=keep-id (Podman) and
-# --user 1000:1000 (Docker) map to the correct home directory owner.
-RUN usermod -d /home/agent -m -l agent node
+# Docker runs sandbox containers as the host UID/GID, so keep the home directory
+# writable even when that UID differs from the image's agent user.
+RUN usermod -d /home/agent -m -l agent node && chmod 0777 /home/agent
 
 # Install Codex CLI (run as root before USER agent)
 RUN npm install -g @openai/codex
@@ -156,10 +162,12 @@ RUN apt-get update && apt-get install -y \\
 
 {{BACKLOG_MANAGER_TOOLS}}
 
+{{PACKAGE_MANAGER_TOOLS}}
+
 # Rename the base image's "node" user (UID 1000) to "agent".
-# This keeps UID 1000 so that --userns=keep-id (Podman) and
-# --user 1000:1000 (Docker) map to the correct home directory owner.
-RUN usermod -d /home/agent -m -l agent node
+# Docker runs sandbox containers as the host UID/GID, so keep the home directory
+# writable even when that UID differs from the image's agent user.
+RUN usermod -d /home/agent -m -l agent node && chmod 0777 /home/agent
 
 # Install OpenCode CLI (run as root before USER agent)
 RUN npm install -g opencode-ai@latest
@@ -174,7 +182,48 @@ WORKDIR /home/agent
 ENTRYPOINT ["sleep", "infinity"]
 `;
 
+const COPILOT_CLI_DOCKERFILE = `FROM node:22-bookworm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \\
+  git \\
+  curl \\
+  jq \\
+  && rm -rf /var/lib/apt/lists/*
+
+{{BACKLOG_MANAGER_TOOLS}}
+
+{{PACKAGE_MANAGER_TOOLS}}
+
+# Rename the base image's "node" user (UID 1000) to "agent".
+# Docker runs sandbox containers as the host UID/GID, so keep the home directory
+# writable even when that UID differs from the image's agent user.
+RUN usermod -d /home/agent -m -l agent node && chmod 0777 /home/agent
+
+# Install Copilot CLI (run as root before USER agent)
+RUN npm install -g @github/copilot
+
+USER agent
+
+WORKDIR /home/agent
+
+# In worktree sandbox mode, Sandcastle bind-mounts the git worktree at \${SANDBOX_REPO_DIR}
+# and overrides the working directory to \${SANDBOX_REPO_DIR} at container start.
+# Structure your Dockerfile so that \${SANDBOX_REPO_DIR} can serve as the project root.
+ENTRYPOINT ["sleep", "infinity"]
+`;
+
 const AGENT_REGISTRY: AgentEntry[] = [
+  {
+    name: "copilot-cli",
+    label: "Copilot CLI",
+    defaultModel: "gpt-5.5",
+    factoryImport: "copilotCli",
+    dockerfileTemplate: COPILOT_CLI_DOCKERFILE,
+    envExample: `# GitHub token for Copilot CLI auth
+# Requires Copilot Requests permission
+GITHUB_TOKEN=`,
+  },
   {
     name: "claude-code",
     label: "Claude Code",
@@ -293,6 +342,92 @@ export const getAgent = (name: string): AgentEntry | undefined =>
   AGENT_REGISTRY.find((a) => a.name === name);
 
 // ---------------------------------------------------------------------------
+// Package manager registry (internal — not part of public API)
+// ---------------------------------------------------------------------------
+
+export interface PackageManagerEntry {
+  readonly name: "npm" | "pnpm";
+  readonly label: string;
+  readonly installCommand: string;
+  readonly dockerfileTools: string;
+  readonly version?: string;
+}
+
+const npmPackageManager = (): PackageManagerEntry => ({
+  name: "npm",
+  label: "npm",
+  installCommand: "npm install",
+  dockerfileTools: "",
+});
+
+const pnpmPackageManager = (version?: string): PackageManagerEntry => {
+  const pnpmVersion = version ?? "latest";
+  return {
+    name: "pnpm",
+    label: version ? `pnpm ${version}` : "pnpm",
+    installCommand: "pnpm install",
+    dockerfileTools: `# Install pnpm
+RUN npm install -g pnpm@${pnpmVersion}`,
+    version,
+  };
+};
+
+const PACKAGE_MANAGER_REGISTRY: PackageManagerEntry[] = [
+  npmPackageManager(),
+  pnpmPackageManager(),
+];
+
+export const listPackageManagers = (): PackageManagerEntry[] =>
+  PACKAGE_MANAGER_REGISTRY;
+
+export const getPackageManager = (
+  name: string,
+): PackageManagerEntry | undefined =>
+  name === "npm"
+    ? npmPackageManager()
+    : name === "pnpm"
+      ? pnpmPackageManager()
+      : undefined;
+
+export const detectPackageManager = (
+  repoDir: string,
+): Effect.Effect<PackageManagerEntry, never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const pkgPath = join(repoDir, "package.json");
+    const packageJsonExists = yield* fs
+      .exists(pkgPath)
+      .pipe(Effect.orElseSucceed(() => false));
+    if (packageJsonExists) {
+      const content = yield* fs
+        .readFileString(pkgPath)
+        .pipe(Effect.orElseSucceed(() => ""));
+      try {
+        const pkg = JSON.parse(content) as Record<string, unknown>;
+        const packageManager = pkg["packageManager"];
+        if (typeof packageManager === "string") {
+          const match = packageManager.match(/^pnpm@(.+)$/);
+          if (match) return pnpmPackageManager(match[1]);
+        }
+      } catch {
+        return npmPackageManager();
+      }
+    }
+
+    const pnpmWorkspaceExists = yield* fs
+      .exists(join(repoDir, "pnpm-workspace.yaml"))
+      .pipe(Effect.orElseSucceed(() => false));
+    if (pnpmWorkspaceExists) return pnpmPackageManager();
+
+    const pnpmLockExists = yield* fs
+      .exists(join(repoDir, "pnpm-lock.yaml"))
+      .pipe(Effect.orElseSucceed(() => false));
+    if (pnpmLockExists) return pnpmPackageManager();
+
+    return npmPackageManager();
+  });
+
+// ---------------------------------------------------------------------------
 // Sandbox provider registry (internal — not part of public API)
 // ---------------------------------------------------------------------------
 
@@ -335,7 +470,10 @@ export const getSandboxProvider = (
 export function getNextStepsLines(
   template: string,
   mainFilename: string,
+  packageManager: PackageManagerEntry = npmPackageManager(),
 ): string[] {
+  const runCommand =
+    packageManager.name === "pnpm" ? "pnpm sandcastle" : "npm run sandcastle";
   if (template === "blank") {
     return [
       "Next steps:",
@@ -344,7 +482,7 @@ export function getNextStepsLines(
       "2. Read and customize .sandcastle/prompt.md to describe what you want the agent to do",
       `3. Customize .sandcastle/${mainFilename} — it uses the JS API (\`run()\`) to control how the agent runs`,
       `4. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
-      "5. Run `npm run sandcastle` to start the agent",
+      `5. Run \`${runCommand}\` to start the agent`,
     ];
   } else {
     const hasReviewer = template.includes("review");
@@ -354,7 +492,7 @@ export function getNextStepsLines(
       `${step++}. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
       "   If you want to use your Claude subscription instead of an API key, see https://github.com/mattpocock/sandcastle/issues/191",
       `${step++}. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
-      `${step++}. Templates use \`copyToWorktree: ["node_modules"]\` to copy your host node_modules into the sandbox for fast startup — the \`npm install\` in the onSandboxReady hook is a safety net for platform-specific binaries. Adjust both if you use a different package manager`,
+      `${step++}. Templates use \`copyToWorktree: ["node_modules"]\` to copy your host node_modules into the sandbox for fast startup — the \`${packageManager.installCommand}\` in the onSandboxReady hook is a safety net for platform-specific binaries. Adjust both if you use a different package manager`,
       `${step++}. Read and customize the prompt files in .sandcastle/ — they shape what the agent does`,
     ];
     if (hasReviewer) {
@@ -362,7 +500,7 @@ export function getNextStepsLines(
         `${step++}. Customize .sandcastle/CODING_STANDARDS.md with your project's standards — the reviewer agent loads it during review`,
       );
     }
-    lines.push(`${step++}. Run \`npm run sandcastle\` to start the agent`);
+    lines.push(`${step++}. Run \`${runCommand}\` to start the agent`);
     return lines;
   }
 }
@@ -515,7 +653,9 @@ const rewritePromptFiles = (
 /** Text file extensions eligible for `{{KEY}}` template argument substitution. */
 const TEXT_FILE_EXTENSIONS = new Set([
   ".md",
+  ".mts",
   ".txt",
+  ".ts",
   ".env",
   ".example",
   // Dockerfile / Containerfile have no extension — handled by name check below
@@ -539,7 +679,7 @@ const isTextFile = (filename: string): boolean => {
  */
 const substituteTemplateArgs = (
   configDir: string,
-  backlogManager: BacklogManagerEntry,
+  templateArgs: Record<string, string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -555,9 +695,7 @@ const substituteTemplateArgs = (
             .readFileString(filePath)
             .pipe(Effect.mapError((e) => new Error(e.message)));
           const original = content;
-          for (const [key, value] of Object.entries(
-            backlogManager.templateArgs,
-          )) {
+          for (const [key, value] of Object.entries(templateArgs)) {
             content = content.replace(
               new RegExp(`\\{\\{${key}\\}\\}`, "g"),
               value,
@@ -585,6 +723,7 @@ export interface ScaffoldOptions {
   createLabel?: boolean;
   backlogManager?: BacklogManagerEntry;
   sandboxProvider?: SandboxProviderEntry;
+  packageManager?: PackageManagerEntry;
 }
 
 export interface ScaffoldResult {
@@ -644,6 +783,14 @@ export const scaffold = (
     }
 
     const mainFilename = yield* detectMainFilename(repoDir);
+    const packageManager =
+      options.packageManager ?? (yield* detectPackageManager(repoDir));
+    const templateArgs = {
+      ...backlogManager.templateArgs,
+      PACKAGE_MANAGER: packageManager.name,
+      INSTALL_COMMAND: packageManager.installCommand,
+      PACKAGE_MANAGER_TOOLS: packageManager.dockerfileTools,
+    };
 
     yield* fs
       .makeDirectory(configDir, { recursive: false })
@@ -680,8 +827,8 @@ export const scaffold = (
     // Rewrite main file with the selected agent factory and model
     yield* rewriteMainTs(configDir, agent, model, mainFilename);
 
-    // Replace backlog manager template arguments in all text files (must run before label stripping)
-    yield* substituteTemplateArgs(configDir, backlogManager);
+    // Replace template arguments in all text files (must run before label stripping)
+    yield* substituteTemplateArgs(configDir, templateArgs);
 
     // Strip --label Sandcastle from prompt files when the user declined label creation
     if (!createLabel) {

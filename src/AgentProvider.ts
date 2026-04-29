@@ -21,7 +21,11 @@ const TOOL_ARG_FIELDS: Record<string, string> = {
 const extractErrorMessage = (obj: any): string | undefined => {
   const err = obj.error;
   if (typeof err === "string") return err;
-  if (typeof err === "object" && err !== null && typeof err.message === "string") {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    typeof err.message === "string"
+  ) {
     return err.message;
   }
   if (typeof obj.message === "string") return obj.message;
@@ -330,6 +334,128 @@ export const opencode = (
 
   parseStreamLine(_line: string): ParsedStreamEvent[] {
     return [];
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Copilot CLI agent provider
+// ---------------------------------------------------------------------------
+
+const getNestedString = (
+  obj: Record<string, unknown>,
+  path: readonly string[],
+): string | undefined => {
+  let current: unknown = obj;
+  for (const key of path) {
+    if (typeof current !== "object" || current === null) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "string" ? current : undefined;
+};
+
+const parseCopilotCliStreamLine = (line: string): ParsedStreamEvent[] => {
+  if (!line.startsWith("{")) return [];
+  try {
+    const obj = JSON.parse(line) as Record<string, unknown>;
+
+    if (obj.type === "assistant.message_delta") {
+      const delta = getNestedString(obj, ["data", "deltaContent"]);
+      return delta ? [{ type: "text", text: delta }] : [];
+    }
+
+    if (obj.type === "assistant.message") {
+      const content = getNestedString(obj, ["data", "content"]);
+      const phase = getNestedString(obj, ["data", "phase"]);
+      return content && phase === "final_answer"
+        ? [{ type: "result", result: content }]
+        : [];
+    }
+
+    if (typeof obj.text === "string") {
+      return [{ type: "text", text: obj.text }];
+    }
+
+    if (typeof obj.result === "string") {
+      return [{ type: "result", result: obj.result }];
+    }
+
+    if (
+      obj.type === "message" &&
+      obj.role === "assistant" &&
+      typeof obj.content === "string"
+    ) {
+      return [
+        { type: "text", text: obj.content },
+        { type: "result", result: obj.content },
+      ];
+    }
+
+    const toolName =
+      typeof obj.name === "string"
+        ? obj.name
+        : typeof obj.tool === "string"
+          ? obj.tool
+          : undefined;
+    const command =
+      getNestedString(obj, ["input", "command"]) ??
+      getNestedString(obj, ["args", "command"]) ??
+      getNestedString(obj, ["arguments", "command"]);
+    if (command && (obj.type === "tool_call" || obj.type === "tool_use")) {
+      const normalizedName =
+        toolName === undefined || toolName === "shell" ? "Bash" : toolName;
+      return [{ type: "tool_call", name: normalizedName, args: command }];
+    }
+
+    if (obj.type === "error") {
+      const msg = extractErrorMessage(obj);
+      return msg ? [{ type: "result", result: msg }] : [];
+    }
+  } catch {
+    // Not valid JSON — skip
+  }
+  return [];
+};
+
+/** Options for the Copilot CLI agent provider. */
+export interface CopilotCliOptions {
+  readonly effort?: "low" | "medium" | "high" | "xhigh";
+  /** Environment variables injected by this agent provider. */
+  readonly env?: Record<string, string>;
+}
+
+export const copilotCli = (
+  model: string,
+  options?: CopilotCliOptions,
+): AgentProvider => ({
+  name: "copilot-cli",
+  env: options?.env ?? {},
+  captureSessions: false,
+
+  buildPrintCommand({
+    prompt,
+    dangerouslySkipPermissions,
+  }: AgentCommandOptions): PrintCommand {
+    const allowAll = dangerouslySkipPermissions ? " --allow-all" : "";
+    const effortFlag = options?.effort ? ` --effort ${options.effort}` : "";
+    return {
+      command: `copilot --prompt ${shellEscape(prompt)} --output-format json --model ${shellEscape(model)}${effortFlag}${allowAll}`,
+    };
+  },
+
+  buildInteractiveArgs({
+    prompt,
+    dangerouslySkipPermissions,
+  }: AgentCommandOptions): string[] {
+    const args = ["copilot"];
+    if (dangerouslySkipPermissions) args.push("--allow-all");
+    args.push("--model", model);
+    if (options?.effort) args.push("--effort", options.effort);
+    if (prompt) args.push("--interactive", prompt);
+    return args;
+  },
+
+  parseStreamLine(line: string): ParsedStreamEvent[] {
+    return parseCopilotCliStreamLine(line);
   },
 });
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { claudeCode, codex, opencode, pi } from "./AgentProvider.js";
+import {
+  claudeCode,
+  codex,
+  copilotCli,
+  opencode,
+  pi,
+} from "./AgentProvider.js";
 import type { AgentCommandOptions } from "./AgentProvider.js";
 
 /** Shorthand: build options with dangerouslySkipPermissions: true (mirrors existing sandbox callers). */
@@ -777,6 +783,231 @@ describe("opencode factory", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Copilot CLI factory
+// ---------------------------------------------------------------------------
+
+describe("copilotCli factory", () => {
+  it("returns a provider with name 'copilot-cli'", () => {
+    const provider = copilotCli("gpt-5.5");
+    expect(provider.name).toBe("copilot-cli");
+  });
+
+  it("does not expose envManifest or dockerfileTemplate", () => {
+    const provider = copilotCli("gpt-5.5");
+    expect(provider).not.toHaveProperty("envManifest");
+    expect(provider).not.toHaveProperty("dockerfileTemplate");
+  });
+
+  it("does not capture sessions", () => {
+    const provider = copilotCli("gpt-5.5");
+    expect(provider.captureSessions).toBe(false);
+  });
+
+  it("buildPrintCommand uses Copilot CLI non-interactive JSON mode", () => {
+    const provider = copilotCli("gpt-5.5");
+    const { command, stdin } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("copilot");
+    expect(command).toContain("--prompt 'do something'");
+    expect(command).toContain("--output-format json");
+    expect(command).toContain("--model 'gpt-5.5'");
+    expect(stdin).toBeUndefined();
+  });
+
+  it("buildPrintCommand maps dangerouslySkipPermissions to --allow-all", () => {
+    const provider = copilotCli("gpt-5.5");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+    });
+    expect(command).toContain("--allow-all");
+  });
+
+  it("buildPrintCommand omits --allow-all when dangerouslySkipPermissions is false", () => {
+    const provider = copilotCli("gpt-5.5");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: false,
+    });
+    expect(command).not.toContain("--allow-all");
+  });
+
+  it("buildPrintCommand includes --effort when specified", () => {
+    const provider = copilotCli("gpt-5.5", { effort: "high" });
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("--effort high");
+  });
+
+  it("buildPrintCommand shell-escapes the prompt and model", () => {
+    const provider = copilotCli("gpt-5.5");
+    const { command } = provider.buildPrintCommand(opts("it's a test"));
+    expect(command).toContain("--prompt 'it'\\''s a test'");
+    expect(command).toContain("--model 'gpt-5.5'");
+  });
+
+  it("buildInteractiveArgs includes prompt, model, and --allow-all when requested", () => {
+    const provider = copilotCli("gpt-5.5", { effort: "xhigh" });
+    const args = provider.buildInteractiveArgs!({
+      prompt: "fix it",
+      dangerouslySkipPermissions: true,
+    });
+    expect(args).toEqual([
+      "copilot",
+      "--allow-all",
+      "--model",
+      "gpt-5.5",
+      "--effort",
+      "xhigh",
+      "--interactive",
+      "fix it",
+    ]);
+  });
+
+  it("buildInteractiveArgs omits --allow-all when dangerouslySkipPermissions is false", () => {
+    const provider = copilotCli("gpt-5.5");
+    const args = provider.buildInteractiveArgs!({
+      prompt: "fix it",
+      dangerouslySkipPermissions: false,
+    });
+    expect(args).not.toContain("--allow-all");
+  });
+
+  it("parseStreamLine extracts text from a text event", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({ type: "text", text: "Hello world" });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "text", text: "Hello world" },
+    ]);
+  });
+
+  it("parseStreamLine extracts final result from a result event", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "result",
+      result: "Done <promise>COMPLETE</promise>",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "Done <promise>COMPLETE</promise>" },
+    ]);
+  });
+
+  it("parseStreamLine extracts assistant message content as text and result", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "message",
+      role: "assistant",
+      content: "All done",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "text", text: "All done" },
+      { type: "result", result: "All done" },
+    ]);
+  });
+
+  it("parseStreamLine ignores Copilot session and MCP status events", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "session.mcp_server_status_changed",
+      data: { serverName: "github-mcp-server", status: "connected" },
+      ephemeral: true,
+    });
+    expect(provider.parseStreamLine(line)).toEqual([]);
+  });
+
+  it("parseStreamLine extracts Copilot assistant deltas as display text", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "assistant.message_delta",
+      data: { deltaContent: "hello" },
+      ephemeral: true,
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "text", text: "hello" },
+    ]);
+  });
+
+  it("parseStreamLine extracts only final_answer assistant messages as result", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "assistant.message",
+      data: {
+        content: '<plan>{"issues":[]}</plan>',
+        phase: "final_answer",
+        toolRequests: [],
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: '<plan>{"issues":[]}</plan>' },
+    ]);
+  });
+
+  it("parseStreamLine ignores Copilot assistant messages that only request tools", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "assistant.message",
+      data: {
+        content: "",
+        toolRequests: [{ name: "skill" }],
+      },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([]);
+  });
+
+  it("parseStreamLine ignores Copilot result usage events without response content", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "result",
+      exitCode: 0,
+      usage: { premiumRequests: 1 },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([]);
+  });
+
+  it("parseStreamLine extracts shell tool calls from likely Copilot JSON events", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "tool_call",
+      name: "shell",
+      input: { command: "npm test" },
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "tool_call", name: "Bash", args: "npm test" },
+    ]);
+  });
+
+  it("parseStreamLine captures error event with top-level message as result", () => {
+    const provider = copilotCli("gpt-5.5");
+    const line = JSON.stringify({
+      type: "error",
+      message: "Authentication failed",
+    });
+    expect(provider.parseStreamLine(line)).toEqual([
+      { type: "result", result: "Authentication failed" },
+    ]);
+  });
+
+  it("parseStreamLine returns empty array for unknown and malformed lines", () => {
+    const provider = copilotCli("gpt-5.5");
+    expect(provider.parseStreamLine("not json")).toEqual([]);
+    expect(provider.parseStreamLine("{bad json")).toEqual([]);
+    expect(
+      provider.parseStreamLine(JSON.stringify({ type: "unknown" })),
+    ).toEqual([]);
+  });
+
+  it("accepts an env option and exposes it on the provider", () => {
+    const provider = copilotCli("gpt-5.5", {
+      env: { GITHUB_TOKEN: "github_pat_test" },
+    });
+    expect(provider.env).toEqual({ GITHUB_TOKEN: "github_pat_test" });
+  });
+
+  it("defaults env to empty object when not provided", () => {
+    const provider = copilotCli("gpt-5.5");
+    expect(provider.env).toEqual({});
+  });
+});
+
 describe("resumeSession on non-Claude providers", () => {
   it("pi ignores resumeSession in buildPrintCommand", () => {
     const provider = pi("claude-sonnet-4-6");
@@ -802,6 +1033,17 @@ describe("resumeSession on non-Claude providers", () => {
 
   it("opencode ignores resumeSession in buildPrintCommand", () => {
     const provider = opencode("opencode/big-pickle");
+    const { command } = provider.buildPrintCommand({
+      prompt: "test",
+      dangerouslySkipPermissions: true,
+      resumeSession: "abc-123",
+    });
+    expect(command).not.toContain("--resume");
+    expect(command).not.toContain("abc-123");
+  });
+
+  it("copilotCli ignores resumeSession in buildPrintCommand", () => {
+    const provider = copilotCli("gpt-5.5");
     const { command } = provider.buildPrintCommand({
       prompt: "test",
       dangerouslySkipPermissions: true,

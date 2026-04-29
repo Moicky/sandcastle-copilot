@@ -83,6 +83,11 @@ describe("sandcastle CLI", () => {
     expect(stdout).toContain("--model");
   });
 
+  it("init --help exposes --package-manager flag", async () => {
+    const { stdout } = await runCli("init --help", process.cwd());
+    expect(stdout).toContain("--package-manager");
+  });
+
   it("init --template nonexistent produces error listing available templates", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
     await initRepo(hostDir);
@@ -163,7 +168,24 @@ describe("sandcastle CLI", () => {
       const { stdout, stderr } = err as { stdout: string; stderr: string };
       const output = stdout + stderr;
       expect(output).toContain("nonexistent");
+      expect(output).toContain("copilot-cli");
       expect(output).toContain("claude-code");
+    }
+  });
+
+  it("init --package-manager nonexistent produces error listing available package managers", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "cli-host-"));
+    await initRepo(hostDir);
+
+    try {
+      await runCli("init --package-manager nonexistent", hostDir);
+      expect.fail("Expected command to fail");
+    } catch (err: unknown) {
+      const { stdout, stderr } = err as { stdout: string; stderr: string };
+      const output = stdout + stderr;
+      expect(output).toContain("nonexistent");
+      expect(output).toContain("npm");
+      expect(output).toContain("pnpm");
     }
   });
 });

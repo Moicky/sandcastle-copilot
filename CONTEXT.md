@@ -19,7 +19,7 @@ The developer's machine where Sandcastle runs and the real git repo lives.
 _Avoid_: "local" (ambiguous -- the sandbox also has a local filesystem)
 
 **Agent**:
-The AI coding tool invoked inside the **sandbox** (e.g. Claude Code, Codex).
+The AI coding tool invoked inside the **sandbox** (e.g. Claude Code, Copilot CLI, Codex).
 _Avoid_: "RALPH", "the bot", "Claude" (too specific -- agent is swappable)
 
 ### Sandboxes
@@ -214,6 +214,9 @@ _Avoid_: "log event" (the log file contains more than just agent output), "displ
 - The **agent**'s Dockerfile template contains **template arguments** (e.g. `{{BACKLOG_MANAGER_TOOLS}}`) that **init** fills in based on the selected **backlog manager**
 - **Build-image** and **remove-image** are namespaced under their provider in the CLI (e.g. `sandcastle docker build-image`)
 - The **agent provider** is selected via the `agent` field in config or `--agent` CLI flag
+- **Init** initially selects the Copilot CLI **agent provider** by default, while still allowing the user to choose another **agent provider**
+- The Copilot CLI **agent provider** uses `GITHUB_TOKEN` for Copilot authentication; the GitHub Issues **backlog manager** uses `GH_TOKEN` for issue access
+- Only the Claude Code **agent provider** supports Sandcastle **agent session** capture and resume; the Copilot CLI **agent provider** does not capture or resume sessions in its first implementation
 - At launch, Sandcastle resolves env vars from **config directory** `.env` and `process.env`, then passes the full env map into the **sandbox**
 - **Inline prompts** bypass **prompt argument substitution** and **prompt expansion** entirely -- they are passed to the **agent** as-is. `promptArgs` cannot be combined with an **inline prompt**; doing so raises an error
 - **Prompt argument substitution** and **prompt expansion** only apply to **prompt templates** (prompts sourced via `promptFile`)

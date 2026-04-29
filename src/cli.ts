@@ -20,6 +20,9 @@ import {
   getAgent,
   listBacklogManagers,
   getBacklogManager,
+  listPackageManagers,
+  getPackageManager,
+  detectPackageManager,
   listSandboxProviders,
   getSandboxProvider,
   getNextStepsLines,
@@ -28,6 +31,7 @@ import { defaultImageName } from "./sandboxes/docker.js";
 import type {
   AgentEntry,
   BacklogManagerEntry,
+  PackageManagerEntry,
   SandboxProviderEntry,
 } from "./InitService.js";
 import { ConfigDirError, InitError } from "./errors.js";
@@ -78,13 +82,20 @@ const templateOption = Options.text("template").pipe(
 );
 
 const agentOption = Options.text("agent").pipe(
-  Options.withDescription("Agent to use (e.g. claude-code)"),
+  Options.withDescription("Agent to use (e.g. copilot-cli, claude-code)"),
   Options.optional,
 );
 
 const initModelOption = Options.text("model").pipe(
   Options.withDescription(
-    "Model to use for the agent (e.g. claude-sonnet-4-6). Defaults to the agent's default model",
+    "Model to use for the agent (e.g. gpt-5.5). Defaults to the agent's default model",
+  ),
+  Options.optional,
+);
+
+const packageManagerOption = Options.text("package-manager").pipe(
+  Options.withDescription(
+    "Package manager to install/use in generated sandboxes (npm or pnpm). Defaults to repo detection",
   ),
   Options.optional,
 );
@@ -96,12 +107,14 @@ const initCommand = Command.make(
     template: templateOption,
     agent: agentOption,
     model: initModelOption,
+    packageManager: packageManagerOption,
   },
   ({
     imageName: imageNameFlag,
     template,
     agent: agentFlag,
     model: modelFlag,
+    packageManager: packageManagerFlag,
   }) =>
     Effect.gen(function* () {
       const d = yield* Display;
@@ -122,6 +135,21 @@ const initCommand = Command.make(
         }
       }
 
+      const packageManagers = listPackageManagers();
+      let selectedPackageManager: PackageManagerEntry | undefined;
+      if (packageManagerFlag._tag === "Some") {
+        const entry = getPackageManager(packageManagerFlag.value);
+        if (!entry) {
+          const names = packageManagers.map((pm) => pm.name).join(", ");
+          yield* Effect.fail(
+            new InitError({
+              message: `Unknown package manager "${packageManagerFlag.value}". Available: ${names}`,
+            }),
+          );
+        }
+        selectedPackageManager = entry!;
+      }
+
       // Resolve agent: CLI flag > interactive select
       const agents = listAgents();
       let selectedAgent: AgentEntry;
@@ -140,7 +168,7 @@ const initCommand = Command.make(
         const selected = yield* Effect.promise(() =>
           clack.select({
             message: "Select an agent:",
-            initialValue: "claude-code",
+            initialValue: "copilot-cli",
             options: agents.map((a) => ({
               value: a.name,
               label: a.label,
@@ -161,6 +189,33 @@ const initCommand = Command.make(
         modelFlag._tag === "Some"
           ? modelFlag.value
           : selectedAgent.defaultModel;
+
+      if (!selectedPackageManager) {
+        const detectedPackageManager = yield* detectPackageManager(cwd);
+        const selected = yield* Effect.promise(() =>
+          clack.select({
+            message: "Select a package manager:",
+            initialValue: detectedPackageManager.name,
+            options: packageManagers.map((pm) => ({
+              value: pm.name,
+              label: pm.label,
+              hint:
+                pm.name === detectedPackageManager.name
+                  ? "Detected for this repo"
+                  : undefined,
+            })),
+          }),
+        );
+        if (clack.isCancel(selected)) {
+          yield* Effect.fail(
+            new InitError({ message: "Package manager selection cancelled." }),
+          );
+        }
+        selectedPackageManager =
+          selected === detectedPackageManager.name
+            ? detectedPackageManager
+            : getPackageManager(selected as string)!;
+      }
 
       // Resolve sandbox provider: interactive select (no default — user must choose)
       const sandboxProviders = listSandboxProviders();
@@ -265,6 +320,7 @@ const initCommand = Command.make(
           createLabel: shouldCreateLabel === true,
           backlogManager: selectedBacklogManager,
           sandboxProvider: selectedSandboxProvider,
+          packageManager: selectedPackageManager,
         }).pipe(
           Effect.mapError(
             (e) =>
@@ -309,6 +365,7 @@ const initCommand = Command.make(
       const nextSteps = getNextStepsLines(
         selectedTemplate,
         scaffoldResult.mainFilename,
+        selectedPackageManager,
       );
       for (const [i, line] of nextSteps.entries()) {
         yield* d.text(i === 0 ? line : styleText("dim", line));
