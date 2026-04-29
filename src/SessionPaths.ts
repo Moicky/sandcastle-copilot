@@ -12,6 +12,10 @@ export class SessionPaths extends Context.Tag("SessionPaths")<
     readonly hostProjectsDir: string;
     /** Sandbox path to the Claude Code projects directory. */
     readonly sandboxProjectsDir: string;
+    /** Host path to the Copilot CLI session-state directory. */
+    readonly hostCopilotSessionStateDir: string;
+    /** Sandbox path to the Copilot CLI session-state directory. */
+    readonly sandboxCopilotSessionStateDir: string;
   }
 >() {}
 
@@ -19,7 +23,22 @@ export class SessionPaths extends Context.Tag("SessionPaths")<
 export const sessionPathsLayer = (config: {
   readonly hostProjectsDir: string;
   readonly sandboxProjectsDir: string;
-}): Layer.Layer<SessionPaths> => Layer.succeed(SessionPaths, config);
+  readonly hostCopilotSessionStateDir?: string;
+  readonly sandboxCopilotSessionStateDir?: string;
+}): Layer.Layer<SessionPaths> =>
+  Layer.succeed(SessionPaths, {
+    hostCopilotSessionStateDir: join(
+      process.env.HOME ?? "~",
+      ".copilot",
+      "session-state",
+    ),
+    sandboxCopilotSessionStateDir: join(
+      "/home/agent",
+      ".copilot",
+      "session-state",
+    ),
+    ...config,
+  });
 
 /**
  * Default `SessionPaths` layer using Claude Code's conventional locations:
@@ -31,5 +50,15 @@ export const defaultSessionPathsLayer: Layer.Layer<SessionPaths> = Layer.sync(
   () => ({
     hostProjectsDir: join(process.env.HOME ?? "~", ".claude", "projects"),
     sandboxProjectsDir: join("/home/agent", ".claude", "projects"),
+    hostCopilotSessionStateDir: join(
+      process.env.HOME ?? "~",
+      ".copilot",
+      "session-state",
+    ),
+    sandboxCopilotSessionStateDir: join(
+      "/home/agent",
+      ".copilot",
+      "session-state",
+    ),
   }),
 );
