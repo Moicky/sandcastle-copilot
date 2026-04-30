@@ -782,6 +782,8 @@ agent: copilotCli("gpt-5.5", { effort: "high" });
 | `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | —       | Copilot CLI reasoning effort level via `--effort`     |
 | `env`    | `Record<string, string>`                       | `{}`    | Environment variables injected by this agent provider |
 
+After each successful `copilotCli()` run in a Docker or Podman sandbox, Sandcastle copies Copilot CLI's sandbox session-state directory from `/home/agent/.copilot/session-state` to the host `~/.copilot/session-state`. This preserves the runtime logs for later analysis with tools such as `copilot-usage`. Missing session-state directories are skipped; copy failures fail the run.
+
 ### Provider `env`
 
 Both **agent providers** and **sandbox providers** accept an optional `env: Record<string, string>` in their options. These environment variables are merged with the `.sandcastle/.env` resolver output at launch time:
