@@ -14,6 +14,7 @@ import { withSandboxLifecycle, type SandboxHooks } from "./SandboxLifecycle.js";
 import type { AgentProvider, IterationUsage } from "./AgentProvider.js";
 import { TextDeltaBuffer } from "./TextDeltaBuffer.js";
 import {
+  captureSandboxDirectoryToHost,
   hostSessionStore,
   sandboxSessionStore,
   transferSession,
@@ -127,9 +128,7 @@ const invokeAgent = (
           errorDetail = resultText;
         }
         if (!errorDetail.trim()) {
-          const lines = execResult.stdout
-            .split("\n")
-            .filter((l) => l.trim());
+          const lines = execResult.stdout.split("\n").filter((l) => l.trim());
           errorDetail = lines.slice(-20).join("\n");
         }
         return yield* Effect.fail(
@@ -232,7 +231,12 @@ export const orchestrate = (
     const factory = yield* SandboxFactory;
     const display = yield* Display;
     const streamEmitter = yield* AgentStreamEmitter;
-    const { hostProjectsDir, sandboxProjectsDir } = yield* SessionPaths;
+    const {
+      hostProjectsDir,
+      sandboxProjectsDir,
+      hostCopilotSessionStateDir,
+      sandboxCopilotSessionStateDir,
+    } = yield* SessionPaths;
     const { hostRepoDir, iterations, hooks, prompt, branch, provider } =
       options;
     let completionSignals: string[];
@@ -364,6 +368,26 @@ export const orchestrate = (
                 textBuffer.dispose();
 
                 yield* display.status(label("Agent stopped"), "info");
+
+                if (provider.captureSessionState && bindMountHandle) {
+                  yield* display.status(
+                    label("Capturing session state"),
+                    "info",
+                  );
+                  yield* Effect.tryPromise({
+                    try: () =>
+                      captureSandboxDirectoryToHost(
+                        bindMountHandle,
+                        sandboxCopilotSessionStateDir,
+                        hostCopilotSessionStateDir,
+                      ),
+                    catch: (e) =>
+                      new SessionCaptureError({
+                        message: `Session state capture failed: ${e instanceof Error ? e.message : String(e)}`,
+                        sessionId: "copilot-session-state",
+                      }),
+                  });
+                }
 
                 // Capture session while sandbox is still alive
                 let sessionFilePath: string | undefined;

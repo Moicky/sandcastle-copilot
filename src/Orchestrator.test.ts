@@ -4,14 +4,16 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   copyFile,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { Display, type DisplayEntry, SilentDisplay } from "./Display.js";
@@ -20,6 +22,7 @@ import { orchestrate } from "./Orchestrator.js";
 import { substitutePromptArgs } from "./PromptArgumentSubstitution.js";
 import {
   claudeCode,
+  copilotCli,
   codex as codexFactory,
   opencode as opencodeFactory,
   pi as piFactory,
@@ -27,7 +30,11 @@ import {
 } from "./AgentProvider.js";
 import { Sandbox } from "./SandboxFactory.js";
 import type { DockerError, SandboxError } from "./errors.js";
-import { AgentError, AgentIdleTimeoutError } from "./errors.js";
+import {
+  AgentError,
+  AgentIdleTimeoutError,
+  SessionCaptureError,
+} from "./errors.js";
 import { SandboxFactory } from "./SandboxFactory.js";
 import { encodeProjectPath } from "./SessionStore.js";
 import { defaultSessionPathsLayer, sessionPathsLayer } from "./SessionPaths.js";
@@ -1594,36 +1601,34 @@ describe("Orchestrator error handling", () => {
     await commitFile(hostDir, "hello.txt", "hello", "initial commit");
 
     const opencodeProvider = opencodeFactory("test-model");
-    const stdoutContent = "Setting up environment...\nLoading model...\nError: API key is invalid\nPlease check your credentials";
+    const stdoutContent =
+      "Setting up environment...\nLoading model...\nError: API key is invalid\nPlease check your credentials";
 
-    const { factoryLayer } = makeTestSandboxFactory(
-      hostDir,
-      (dir) => {
-        const fsLayer = makeLocalSandboxLayer(dir);
-        return Layer.succeed(Sandbox, {
-          exec: (command, options) => {
-            if (command.startsWith("opencode ")) {
-              return Effect.succeed({
-                stdout: stdoutContent,
-                stderr: "",
-                exitCode: 1,
-              });
-            }
-            return Effect.flatMap(Sandbox, (real) =>
-              real.exec(command, options),
-            ).pipe(Effect.provide(fsLayer));
-          },
-          copyIn: (hostPath, sandboxPath) =>
-            Effect.flatMap(Sandbox, (real) =>
-              real.copyIn(hostPath, sandboxPath),
-            ).pipe(Effect.provide(fsLayer)),
-          copyFileOut: (sandboxPath, hostPath) =>
-            Effect.flatMap(Sandbox, (real) =>
-              real.copyFileOut(sandboxPath, hostPath),
-            ).pipe(Effect.provide(fsLayer)),
-        });
-      },
-    );
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) => {
+      const fsLayer = makeLocalSandboxLayer(dir);
+      return Layer.succeed(Sandbox, {
+        exec: (command, options) => {
+          if (command.startsWith("opencode ")) {
+            return Effect.succeed({
+              stdout: stdoutContent,
+              stderr: "",
+              exitCode: 1,
+            });
+          }
+          return Effect.flatMap(Sandbox, (real) =>
+            real.exec(command, options),
+          ).pipe(Effect.provide(fsLayer));
+        },
+        copyIn: (hostPath, sandboxPath) =>
+          Effect.flatMap(Sandbox, (real) =>
+            real.copyIn(hostPath, sandboxPath),
+          ).pipe(Effect.provide(fsLayer)),
+        copyFileOut: (sandboxPath, hostPath) =>
+          Effect.flatMap(Sandbox, (real) =>
+            real.copyFileOut(sandboxPath, hostPath),
+          ).pipe(Effect.provide(fsLayer)),
+      });
+    });
 
     const exit = await Effect.runPromiseExit(
       orchestrate({
@@ -1657,35 +1662,32 @@ describe("Orchestrator error handling", () => {
       result: "Rate limit exceeded, please retry later",
     });
 
-    const { factoryLayer } = makeTestSandboxFactory(
-      hostDir,
-      (dir) => {
-        const fsLayer = makeLocalSandboxLayer(dir);
-        return Layer.succeed(Sandbox, {
-          exec: (command, options) => {
-            if (command.startsWith("claude ") && options?.onLine) {
-              options.onLine(errorLine);
-              return Effect.succeed({
-                stdout: errorLine,
-                stderr: "",
-                exitCode: 1,
-              });
-            }
-            return Effect.flatMap(Sandbox, (real) =>
-              real.exec(command, options),
-            ).pipe(Effect.provide(fsLayer));
-          },
-          copyIn: (hostPath, sandboxPath) =>
-            Effect.flatMap(Sandbox, (real) =>
-              real.copyIn(hostPath, sandboxPath),
-            ).pipe(Effect.provide(fsLayer)),
-          copyFileOut: (sandboxPath, hostPath) =>
-            Effect.flatMap(Sandbox, (real) =>
-              real.copyFileOut(sandboxPath, hostPath),
-            ).pipe(Effect.provide(fsLayer)),
-        });
-      },
-    );
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) => {
+      const fsLayer = makeLocalSandboxLayer(dir);
+      return Layer.succeed(Sandbox, {
+        exec: (command, options) => {
+          if (command.startsWith("claude ") && options?.onLine) {
+            options.onLine(errorLine);
+            return Effect.succeed({
+              stdout: errorLine,
+              stderr: "",
+              exitCode: 1,
+            });
+          }
+          return Effect.flatMap(Sandbox, (real) =>
+            real.exec(command, options),
+          ).pipe(Effect.provide(fsLayer));
+        },
+        copyIn: (hostPath, sandboxPath) =>
+          Effect.flatMap(Sandbox, (real) =>
+            real.copyIn(hostPath, sandboxPath),
+          ).pipe(Effect.provide(fsLayer)),
+        copyFileOut: (sandboxPath, hostPath) =>
+          Effect.flatMap(Sandbox, (real) =>
+            real.copyFileOut(sandboxPath, hostPath),
+          ).pipe(Effect.provide(fsLayer)),
+      });
+    });
 
     const exit = await Effect.runPromiseExit(
       orchestrate({
@@ -1702,7 +1704,9 @@ describe("Orchestrator error handling", () => {
       expect(err).toBeInstanceOf(AgentError);
       if (err instanceof AgentError) {
         expect(err.message).toContain("claude-code exited with code 1:");
-        expect(err.message).toContain("Rate limit exceeded, please retry later");
+        expect(err.message).toContain(
+          "Rate limit exceeded, please retry later",
+        );
       }
     }
   });
@@ -1715,34 +1719,31 @@ describe("Orchestrator error handling", () => {
 
     const opencodeProvider = opencodeFactory("test-model");
 
-    const { factoryLayer } = makeTestSandboxFactory(
-      hostDir,
-      (dir) => {
-        const fsLayer = makeLocalSandboxLayer(dir);
-        return Layer.succeed(Sandbox, {
-          exec: (command, options) => {
-            if (command.startsWith("opencode ")) {
-              return Effect.succeed({
-                stdout: "some stdout output",
-                stderr: "fatal error from stderr",
-                exitCode: 1,
-              });
-            }
-            return Effect.flatMap(Sandbox, (real) =>
-              real.exec(command, options),
-            ).pipe(Effect.provide(fsLayer));
-          },
-          copyIn: (hostPath, sandboxPath) =>
-            Effect.flatMap(Sandbox, (real) =>
-              real.copyIn(hostPath, sandboxPath),
-            ).pipe(Effect.provide(fsLayer)),
-          copyFileOut: (sandboxPath, hostPath) =>
-            Effect.flatMap(Sandbox, (real) =>
-              real.copyFileOut(sandboxPath, hostPath),
-            ).pipe(Effect.provide(fsLayer)),
-        });
-      },
-    );
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) => {
+      const fsLayer = makeLocalSandboxLayer(dir);
+      return Layer.succeed(Sandbox, {
+        exec: (command, options) => {
+          if (command.startsWith("opencode ")) {
+            return Effect.succeed({
+              stdout: "some stdout output",
+              stderr: "fatal error from stderr",
+              exitCode: 1,
+            });
+          }
+          return Effect.flatMap(Sandbox, (real) =>
+            real.exec(command, options),
+          ).pipe(Effect.provide(fsLayer));
+        },
+        copyIn: (hostPath, sandboxPath) =>
+          Effect.flatMap(Sandbox, (real) =>
+            real.copyIn(hostPath, sandboxPath),
+          ).pipe(Effect.provide(fsLayer)),
+        copyFileOut: (sandboxPath, hostPath) =>
+          Effect.flatMap(Sandbox, (real) =>
+            real.copyFileOut(sandboxPath, hostPath),
+          ).pipe(Effect.provide(fsLayer)),
+      });
+    });
 
     const exit = await Effect.runPromiseExit(
       orchestrate({
@@ -3241,6 +3242,12 @@ describe("Session capture integration", () => {
     hostRepoDir: string,
     mockAgentBehavior: (sandboxRepoDir: string) => Promise<string>,
     sessionId: string,
+    options?: {
+      readonly copyFileOut?: (
+        sandboxPath: string,
+        hostPath: string,
+      ) => Promise<void>;
+    },
   ): { factoryLayer: Layer.Layer<SandboxFactory> } => {
     const sandboxBaseDir = join(tmpdir(), `orch-session-${randomUUID()}`);
     let branchCounter = 0;
@@ -3269,14 +3276,37 @@ describe("Session capture integration", () => {
             // Create a bind-mount handle backed by filesystem copy
             const handle: BindMountSandboxHandle = {
               worktreePath: sandboxBaseDir,
-              exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+              exec: async (command) => {
+                if (command.startsWith("test -d ")) {
+                  const dir = JSON.parse(
+                    command.slice("test -d ".length),
+                  ) as string;
+                  const exists = await stat(dir)
+                    .then((s) => s.isDirectory())
+                    .catch(() => false);
+                  return { stdout: "", stderr: "", exitCode: exists ? 0 : 1 };
+                }
+                return { stdout: "", stderr: "", exitCode: 0 };
+              },
               copyFileIn: async (hostPath, sandboxPath) => {
                 await mkdir(join(sandboxPath, ".."), { recursive: true });
                 await copyFile(hostPath, sandboxPath);
               },
               copyFileOut: async (sandboxPath, hostPath) => {
-                await mkdir(join(hostPath, ".."), { recursive: true });
-                await copyFile(sandboxPath, hostPath);
+                if (options?.copyFileOut) {
+                  await options.copyFileOut(sandboxPath, hostPath);
+                  return;
+                }
+                const sandboxPathStat = await stat(sandboxPath);
+                if (sandboxPathStat.isDirectory()) {
+                  await cp(sandboxPath, join(hostPath, basename(sandboxPath)), {
+                    recursive: true,
+                    force: true,
+                  });
+                } else {
+                  await mkdir(join(hostPath, ".."), { recursive: true });
+                  await copyFile(sandboxPath, hostPath);
+                }
               },
               close: async () => {},
             };
@@ -3285,7 +3315,11 @@ describe("Session capture integration", () => {
             const fsLayer = makeLocalSandboxLayer(sandboxBaseDir);
             const sandboxLayer = Layer.succeed(Sandbox, {
               exec: (command, options) => {
-                if (command.startsWith("claude ") && options?.onLine) {
+                if (
+                  (command.startsWith("claude ") ||
+                    command.startsWith("copilot ")) &&
+                  options?.onLine
+                ) {
                   const onLine = options.onLine;
                   return Effect.gen(function* () {
                     const cwd = options?.cwd ?? sandboxBaseDir;
@@ -3465,6 +3499,194 @@ describe("Session capture integration", () => {
     expect(result.iterations.length).toBe(1);
     expect(result.iterations[0]!.sessionId).toBeUndefined();
     expect(result.iterations[0]!.sessionFilePath).toBeUndefined();
+  });
+
+  it("captures Copilot session-state to host", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-copilot-host-"));
+    const hostProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-copilot-projects-"),
+    );
+    const sandboxProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-copilot-sb-projects-"),
+    );
+    const hostCopilotSessionStateDir = join(
+      await mkdtemp(join(tmpdir(), "orch-copilot-state-host-")),
+      "session-state",
+    );
+    const sandboxCopilotSessionStateDir = join(
+      await mkdtemp(join(tmpdir(), "orch-copilot-state-sb-")),
+      "session-state",
+    );
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { factoryLayer } = makeSessionCaptureFactory(
+      hostDir,
+      async () => {
+        await mkdir(join(sandboxCopilotSessionStateDir, "session-a"), {
+          recursive: true,
+        });
+        await writeFile(
+          join(sandboxCopilotSessionStateDir, "session-a", "log.jsonl"),
+          "{}\n",
+        );
+        return "Done. <promise>COMPLETE</promise>";
+      },
+      "unused-session-id",
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: copilotCli("gpt-5.5"),
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            factoryLayer,
+            testDisplayLayer,
+            sessionPathsLayer({
+              hostProjectsDir,
+              sandboxProjectsDir,
+              hostCopilotSessionStateDir,
+              sandboxCopilotSessionStateDir,
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.iterations.length).toBe(1);
+    expect(
+      await readFile(
+        join(hostCopilotSessionStateDir, "session-a", "log.jsonl"),
+        "utf-8",
+      ),
+    ).toBe("{}\n");
+  });
+
+  it("skips Copilot session-state capture when the sandbox directory is missing", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-copilot-missing-host-"));
+    const hostProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-copilot-missing-projects-"),
+    );
+    const sandboxProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-copilot-missing-sb-projects-"),
+    );
+    const hostCopilotSessionStateDir = join(
+      await mkdtemp(join(tmpdir(), "orch-copilot-missing-state-host-")),
+      "session-state",
+    );
+    const sandboxCopilotSessionStateDir = join(
+      await mkdtemp(join(tmpdir(), "orch-copilot-missing-state-sb-")),
+      "session-state",
+    );
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { factoryLayer } = makeSessionCaptureFactory(
+      hostDir,
+      async () => "Done. <promise>COMPLETE</promise>",
+      "unused-session-id",
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: copilotCli("gpt-5.5"),
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            factoryLayer,
+            testDisplayLayer,
+            sessionPathsLayer({
+              hostProjectsDir,
+              sandboxProjectsDir,
+              hostCopilotSessionStateDir,
+              sandboxCopilotSessionStateDir,
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.iterations.length).toBe(1);
+    expect(existsSync(hostCopilotSessionStateDir)).toBe(false);
+  });
+
+  it("fails when Copilot session-state copy fails", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-copilot-fail-host-"));
+    const hostProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-copilot-fail-projects-"),
+    );
+    const sandboxProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-copilot-fail-sb-projects-"),
+    );
+    const hostCopilotSessionStateDir = join(
+      await mkdtemp(join(tmpdir(), "orch-copilot-fail-state-host-")),
+      "session-state",
+    );
+    const sandboxCopilotSessionStateDir = join(
+      await mkdtemp(join(tmpdir(), "orch-copilot-fail-state-sb-")),
+      "session-state",
+    );
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { factoryLayer } = makeSessionCaptureFactory(
+      hostDir,
+      async () => {
+        await mkdir(sandboxCopilotSessionStateDir, { recursive: true });
+        return "Done. <promise>COMPLETE</promise>";
+      },
+      "unused-session-id",
+      {
+        copyFileOut: async (sandboxPath) => {
+          if (sandboxPath === sandboxCopilotSessionStateDir) {
+            throw new Error("copy exploded");
+          }
+        },
+      },
+    );
+
+    const exit = await Effect.runPromiseExit(
+      orchestrate({
+        provider: copilotCli("gpt-5.5"),
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            factoryLayer,
+            testDisplayLayer,
+            sessionPathsLayer({
+              hostProjectsDir,
+              sandboxProjectsDir,
+              hostCopilotSessionStateDir,
+              sandboxCopilotSessionStateDir,
+            }),
+          ),
+        ),
+      ),
+    );
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(SessionCaptureError);
+      if (err instanceof SessionCaptureError) {
+        expect(err.message).toContain(
+          "Session state capture failed: copy exploded",
+        );
+      }
+    }
   });
 
   it("resumes a session: transfers JSONL to sandbox and passes --resume to agent", async () => {
