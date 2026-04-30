@@ -8,9 +8,9 @@
  * the JSONL entries from source cwd to target cwd.
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { BindMountSandboxHandle } from "./SandboxProvider.js";
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,38 @@ export const sandboxSessionStore = (
 // ---------------------------------------------------------------------------
 // transferSession
 // ---------------------------------------------------------------------------
+
+export type DirectoryCaptureResult = "copied" | "missing";
+
+/**
+ * Copy a sandbox directory tree into a host directory.
+ *
+ * Missing sandbox directories are skipped so agents that do not create runtime
+ * state do not fail otherwise successful runs.
+ */
+export const captureSandboxDirectoryToHost = async (
+  handle: Pick<BindMountSandboxHandle, "copyFileOut" | "exec">,
+  sandboxDir: string,
+  hostDir: string,
+): Promise<DirectoryCaptureResult> => {
+  const exists = await handle.exec(`test -d ${JSON.stringify(sandboxDir)}`);
+  if (exists.exitCode !== 0) {
+    return "missing";
+  }
+
+  const tmpParent = await mkdtemp(join(tmpdir(), "sandcastle-session-state-"));
+  try {
+    await handle.copyFileOut(sandboxDir, tmpParent);
+    await mkdir(hostDir, { recursive: true });
+    await cp(join(tmpParent, basename(sandboxDir)), hostDir, {
+      recursive: true,
+      force: true,
+    });
+    return "copied";
+  } finally {
+    await rm(tmpParent, { recursive: true, force: true }).catch(() => {});
+  }
+};
 
 /**
  * Transfer a session from one store to another, rewriting `cwd` fields in

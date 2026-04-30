@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  captureSandboxDirectoryToHost,
   type SessionStore,
   encodeProjectPath,
   hostSessionStore,
   sandboxSessionStore,
   transferSession,
 } from "./SessionStore.js";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindMountSandboxHandle } from "./SandboxProvider.js";
@@ -82,9 +91,7 @@ describe("encodeProjectPath", () => {
   });
 
   it("strips multiple trailing backslashes", () => {
-    expect(encodeProjectPath("D:\\projekts\\app\\\\")).toBe(
-      "D-projekts-app",
-    );
+    expect(encodeProjectPath("D:\\projekts\\app\\\\")).toBe("D-projekts-app");
   });
 });
 
@@ -427,5 +434,91 @@ describe("sandboxSessionStore", () => {
       "/tmp/.claude/projects",
     );
     expect(store.cwd).toBe("/sandbox/work");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// captureSandboxDirectoryToHost
+// ---------------------------------------------------------------------------
+
+describe("captureSandboxDirectoryToHost", () => {
+  it("copies a sandbox directory tree into an existing host directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sandcastle-state-copy-"));
+    try {
+      const sandboxDir = join(root, "sandbox", "session-state");
+      const hostDir = join(root, "host", "session-state");
+      await mkdir(join(sandboxDir, "session-a"), { recursive: true });
+      await writeFile(join(sandboxDir, "session-a", "log.jsonl"), "{}\n");
+      await mkdir(hostDir, { recursive: true });
+      await writeFile(join(hostDir, "existing.txt"), "keep");
+
+      const handle: Pick<BindMountSandboxHandle, "copyFileOut" | "exec"> = {
+        exec: async (command: string) => ({
+          stdout: "",
+          stderr: "",
+          exitCode: command.includes("test -d") ? 0 : 1,
+        }),
+        copyFileOut: async (from: string, to: string) => {
+          await cp(from, join(to, "session-state"), {
+            recursive: true,
+            force: true,
+          });
+        },
+      };
+
+      const result = await captureSandboxDirectoryToHost(
+        handle,
+        sandboxDir,
+        hostDir,
+      );
+
+      expect(result).toBe("copied");
+      await expect(
+        readFile(join(hostDir, "existing.txt"), "utf-8"),
+      ).resolves.toBe("keep");
+      await expect(
+        readFile(join(hostDir, "session-a", "log.jsonl"), "utf-8"),
+      ).resolves.toBe("{}\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips capture when the sandbox directory is missing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sandcastle-state-missing-"));
+    try {
+      let copyCalled = false;
+      const handle: Pick<BindMountSandboxHandle, "copyFileOut" | "exec"> = {
+        exec: async () => ({ stdout: "", stderr: "", exitCode: 1 }),
+        copyFileOut: async () => {
+          copyCalled = true;
+        },
+      };
+
+      const result = await captureSandboxDirectoryToHost(
+        handle,
+        "/missing/session-state",
+        join(root, "host"),
+      );
+
+      expect(result).toBe("missing");
+      expect(copyCalled).toBe(false);
+      await expect(stat(join(root, "host"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces copy failures when the sandbox directory exists", async () => {
+    const handle: Pick<BindMountSandboxHandle, "copyFileOut" | "exec"> = {
+      exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+      copyFileOut: async () => {
+        throw new Error("copy exploded");
+      },
+    };
+
+    await expect(
+      captureSandboxDirectoryToHost(handle, "/sandbox/state", "/host/state"),
+    ).rejects.toThrow("copy exploded");
   });
 });
